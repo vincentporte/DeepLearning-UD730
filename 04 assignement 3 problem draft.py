@@ -310,3 +310,274 @@ Another one is to use learning rate decay:
 	learning_rate = tf.train.exponential_decay(0.5, global_step, ...)	
 	optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss, global_step=global_step)
 """
+
+
+
+#################################################################################################
+#https://www.kaggle.com/segovia/digit-recognizer/tensorflow-nn-without-convolution
+# coding: utf-8
+'''
+# Neural Nets with 3 hidden layers (size 1024, 512, 128)
+# <li>1. l2 regularization and relu.</li> 
+# <li>2. Use exponetial decay learning rate for GradientDescentOptimizer</li>
+# <li>3. Use small batch to traing network at each step.</li>
+# 
+# These codes are adapted from an assignment I finished during taking the <a href='https://www.udacity.com/course/deep-learning--ud730'>Udacity Deep Learning Course</a>.
+# 
+# The nudge_dataset function is adapted from <a href='http://scikit-learn.org/stable/auto_examples/neural_networks/plot_rbm_logistic_classification.html#example-neural-networks-plot-rbm-logistic-classification-py
+# ' >an example</a> found on scikit-learn.org.
+'''
+import tensorflow as tf
+import numpy as np
+import pandas as pd
+import time
+from scipy.ndimage import convolve
+
+# read in data
+train = pd.read_csv('../input/train.csv', dtype='float32')
+
+# X_real_test is the 28000 images need to be classified/predicted.
+X_real_test = pd.read_csv('../input/test.csv', dtype='float32')
+
+
+# X: features
+X = train.ix[:,1:785]
+# scale data proportionally
+XS = X / 255
+XS_real_test = X_real_test / 255
+
+
+# Y: labels
+Y = train.ix[:,0]
+Y2 = np.zeros([42000, 10])
+
+# convert the Y series to a matrix with 0 or 1 to indicate the digits
+for i in range(42000):
+    #print ("i = %f" % i)
+    index = Y[i]
+    Y2[i, index] = 1
+
+
+# split into train and a second part, 70% and 30%
+from sklearn.cross_validation import train_test_split
+XS_train, XS_second, Y_train, Y_second = train_test_split(XS, 
+                                                          Y2, 
+                                                          test_size = 0.3, 
+                                                          random_state = 0)
+
+
+# split the second part into validation and test, 50% and 50%
+XS_valid, XS_test, Y_valid, Y_test = train_test_split(XS_second, 
+                                                      Y_second, 
+                                                      test_size = 0.5, 
+                                                      random_state = 0)
+
+
+# convert dataframes into ndarrays
+Xvalidm = XS_valid.as_matrix()
+Xtestm = XS_test.as_matrix()
+XrealTestm = XS_real_test.as_matrix()
+
+
+"""
+This produces a dataset 5 times bigger than the original one,
+by moving the 28x28 images in X around by 1px to left, right, down, up
+"""
+def nudge_dataset(X,Y):
+
+    direction_vectors = [
+        [[0, 1, 0],
+         [0, 0, 0],
+         [0, 0, 0]],
+
+        [[0, 0, 0],
+         [1, 0, 0],
+         [0, 0, 0]],
+
+        [[0, 0, 0],
+         [0, 0, 1],
+         [0, 0, 0]],
+
+        [[0, 0, 0],
+         [0, 0, 0],
+         [0, 1, 0]]]
+
+    shift = lambda x, w: convolve(x.reshape((28, 28)), mode='constant',
+                                  weights=w).ravel()
+    X = np.concatenate([X] +
+                       [np.apply_along_axis(shift, 1, X, vector)
+                        for vector in direction_vectors])
+    Y = np.concatenate([Y for _ in range(5)], axis=0)
+    return X, Y
+    
+
+
+# nudge to get 5X training set
+Xn, Yn = nudge_dataset(XS_train, Y_train)
+
+# nudge Xn and Yn from last step to get 25X training set
+Xtrainm, Ytrain = nudge_dataset(Xn, Yn)
+
+
+def accuracy(predictions, labels):
+    correct_pred_num = np.sum(np.argmax(predictions, 1) == np.argmax(labels, 1))
+    return (100.0 * correct_pred_num / predictions.shape[0])
+
+
+# define graph
+
+num_labels = 10
+
+batch_size = 128
+
+hidden_layer1_size = 1024
+hidden_layer2_size = 512
+hidden_layer3_size = 128
+
+hidden_layer1_stdev = np.sqrt(2.0 / 784)
+hidden_layer2_stdev = np.sqrt(2.0 / hidden_layer1_size)
+hidden_layer3_stdev = np.sqrt(2.0 / hidden_layer2_size)
+output_layer_stdev = np.sqrt(2.0 / hidden_layer3_size)
+
+hidden_layer1_keepprob = 0.5
+hidden_layer2_keepprob = 0.7
+hidden_layer3_keepprob = 0.8
+
+beta1 = 1e-5
+beta2 = 1e-5
+beta3 = 1e-5
+beta4 = 1e-5
+
+deep_graph = tf.Graph()
+with deep_graph.as_default():
+    tf_train_dataset = tf.placeholder(tf.float32, shape = (batch_size, 784))
+    tf_train_labels = tf.placeholder(tf.float32, shape = (batch_size, num_labels))
+    tf_valid_dataset = tf.constant(Xvalidm)
+    tf_test_dataset = tf.constant(Xtestm)
+    tf_real_test_dataset = tf.constant(XrealTestm)
+    
+    # first hidden layer
+    hidden_layer1_weights = tf.Variable(
+        tf.truncated_normal([784, hidden_layer1_size], stddev = hidden_layer1_stdev))
+    hidden_layer1_biases = tf.Variable(tf.zeros([hidden_layer1_size]))
+    hidden_layer1 = tf.nn.dropout(
+        tf.nn.relu(tf.matmul(tf_train_dataset, hidden_layer1_weights) + hidden_layer1_biases),
+        hidden_layer1_keepprob)
+    
+    # second hidden layer
+    hidden_layer2_weights = tf.Variable(
+        tf.truncated_normal([hidden_layer1_size, hidden_layer2_size], stddev = hidden_layer2_stdev))
+    hidden_layer2_biases = tf.Variable(tf.zeros([hidden_layer2_size]))
+    hidden_layer2 = tf.nn.dropout(
+        tf.nn.relu(tf.matmul(hidden_layer1, hidden_layer2_weights) + hidden_layer2_biases),
+        hidden_layer2_keepprob)
+    
+    # third hidden layer
+    hidden_layer3_weights = tf.Variable(
+        tf.truncated_normal([hidden_layer2_size, hidden_layer3_size], stddev = hidden_layer3_stdev))
+    hidden_layer3_biases = tf.Variable(tf.zeros([hidden_layer3_size]))
+    hidden_layer3 = tf.nn.dropout(
+        tf.nn.relu(tf.matmul(hidden_layer2, hidden_layer3_weights) + hidden_layer3_biases),
+        hidden_layer3_keepprob)
+    
+    # output layer
+    output_weights = tf.Variable(
+        tf.truncated_normal([hidden_layer3_size, num_labels], stddev = output_layer_stdev))
+    output_biases = tf.Variable(tf.zeros([num_labels]))
+    logits = tf.matmul(hidden_layer3, output_weights) + output_biases
+    
+    # calculate the loss with regularization
+    loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits, tf_train_labels))
+    loss += (beta1 * tf.nn.l2_loss(hidden_layer1_weights) +
+             beta2 * tf.nn.l2_loss(hidden_layer2_weights) +
+             beta3 * tf.nn.l2_loss(hidden_layer3_weights) + 
+             beta4 * tf.nn.l2_loss(output_weights))
+    
+    # learn with exponential rate decay
+    global_step = tf.Variable(0, trainable = False)
+    starter_learning_rate = 0.4
+    learning_rate = tf.train.exponential_decay(starter_learning_rate, 
+                                               global_step, 
+                                               100000,
+                                               0.96,
+                                               staircase = True)
+    
+    optimizer = tf.train.GradientDescentOptimizer(learning_rate).minimize(loss, global_step = global_step)
+    train_prediction = tf.nn.softmax(logits)
+    
+    ## setup validation prediction
+    valid_hidden_layer1 = tf.nn.relu(tf.matmul(tf_valid_dataset, 
+                                               hidden_layer1_weights) + hidden_layer1_biases)
+    valid_hidden_layer2 = tf.nn.relu(tf.matmul(valid_hidden_layer1, 
+                                               hidden_layer2_weights) + hidden_layer2_biases)
+    valid_hidden_layer3 = tf.nn.relu(tf.matmul(valid_hidden_layer2,
+                                               hidden_layer3_weights) + hidden_layer3_biases)
+    valid_logits = tf.matmul(valid_hidden_layer3, output_weights) + output_biases
+    valid_prediction = tf.nn.softmax(valid_logits)
+    
+    ## set up test prediction
+    test_hidden_layer1 = tf.nn.relu(tf.matmul(tf_test_dataset,
+                                              hidden_layer1_weights) + hidden_layer1_biases)
+    test_hidden_layer2 = tf.nn.relu(tf.matmul(test_hidden_layer1,
+                                              hidden_layer2_weights) + hidden_layer2_biases)
+    test_hidden_layer3 = tf.nn.relu(tf.matmul(test_hidden_layer2,
+                                              hidden_layer3_weights) + hidden_layer3_biases)
+    test_logits = tf.matmul(test_hidden_layer3, output_weights) + output_biases
+    test_prediction = tf.nn.softmax(test_logits)
+    
+    ## set up real_test_prediction
+    real_test_layer1 = tf.nn.relu(tf.matmul(tf_real_test_dataset,
+                                            hidden_layer1_weights) + hidden_layer1_biases)
+    real_test_layer2 = tf.nn.relu(tf.matmul(real_test_layer1,
+                                            hidden_layer2_weights) + hidden_layer2_biases)
+    real_test_layer3 = tf.nn.relu(tf.matmul(real_test_layer2,
+                                            hidden_layer3_weights) + hidden_layer3_biases)
+    real_test_logits = tf.matmul(real_test_layer3, output_weights) + output_biases
+    real_test_prediction = tf.nn.softmax(real_test_logits)
+
+
+# run session
+
+num_steps = 15001
+
+train_acc_records = np.zeros(num_steps)
+valid_acc_records = np.zeros(num_steps)
+test_acc_records = np.zeros(num_steps)
+loss_records = np.zeros(num_steps)
+
+start_time = time.time()
+
+with tf.Session(graph=deep_graph) as sess:
+    tf.initialize_all_variables().run()
+    print ("Initialized")
+    
+    for step in range(num_steps):
+        offset = (step * batch_size) % (Ytrain.shape[0] - batch_size)
+        
+        batch_data = Xtrainm[offset:(offset + batch_size),:]
+        batch_labels = Ytrain[offset:(offset + batch_size),:]
+        
+        feed_dict = {tf_train_dataset:batch_data,
+                     tf_train_labels: batch_labels}
+        
+        _,l,pred = sess.run(
+         [optimizer, loss, train_prediction], feed_dict = feed_dict)
+        
+        train_acc_records[step] = accuracy(pred, batch_labels)
+        valid_acc_records[step] = accuracy(valid_prediction.eval(), Y_valid)
+        test_acc_records[step] = accuracy(test_prediction.eval(), Y_test)
+        loss_records[step] = l
+        
+        if (step % 1000) == 0:
+            print("Minibatch loss at step %d: %f" % (step, l))
+            print("Minibatch accuracy: %0.1f%%" % accuracy(pred, batch_labels))
+            print("Validation accuracy: %.1f%%" % accuracy(valid_prediction.eval(), Y_valid))
+    print("Test accuracy: %.1f%%" % accuracy(test_prediction.eval(), Y_test))
+    
+    print(" ")
+    print("Now let's make a prediction!")
+    real_prediction_results = real_test_prediction.eval()
+    print ("Done!")
+    time_elapsed = time.time() - start_time
+    print ("Run time is approx. %s minutes" % str(int(time_elapsed/60)))
+
