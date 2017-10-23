@@ -1,1 +1,4 @@
 *.pickle
+*.pdf
+*.zip
+.ipynb_checkpoints/*
